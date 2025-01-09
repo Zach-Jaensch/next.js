@@ -31,6 +31,7 @@ pub async fn make_chunk_group(
         *chunking_context.environment().chunk_loading().await?,
         ChunkLoading::Edge
     );
+    let should_trace = *chunking_context.is_tracing_enabled().await?;
 
     let ChunkContentResult {
         chunkable_modules,
@@ -44,7 +45,7 @@ pub async fn make_chunk_group(
         chunk_group_entries,
         availability_info,
         can_split_async,
-        *chunking_context.is_tracing_enabled().await?,
+        should_trace,
     )
     .await?;
 
@@ -141,10 +142,14 @@ pub async fn make_chunk_group(
     // Insert async chunk loaders for every referenced async module
     let async_loaders = async_modules
         .into_iter()
-        .map(|module| {
-            chunking_context.async_loader_chunk_item(*module, Value::new(availability_info))
+        .map(async |module| {
+            Ok(chunking_context
+                .async_loader_chunk_item(*module, Value::new(availability_info))
+                .to_resolved()
+                .await?)
         })
-        .collect::<Vec<_>>();
+        .try_join()
+        .await?;
     let has_async_loaders = !async_loaders.is_empty();
     let async_loader_chunk_items = async_loaders
         .iter()
@@ -181,22 +186,29 @@ pub async fn make_chunk_group(
 
     let mut chunk_items = all_modules
         .iter()
-        .map(|(m, async_info)| {
-            (
+        .map(async |(m, async_info)| {
+            Ok((
                 ChunkItemTy::Included,
-                m.as_chunk_item(chunking_context),
+                m.as_chunk_item(chunking_context).to_resolved().await?,
                 *async_info,
-            )
+            ))
         })
-        .collect::<Vec<_>>();
+        .try_join()
+        .await?;
 
-    chunk_items.extend(passthrough_modules.into_iter().map(|m| {
-        (
-            ChunkItemTy::Passthrough,
-            m.as_chunk_item(chunking_context),
-            None,
-        )
-    }));
+    chunk_items.extend(
+        passthrough_modules
+            .into_iter()
+            .map(async |m| {
+                Ok((
+                    ChunkItemTy::Passthrough,
+                    m.as_chunk_item(chunking_context).to_resolved().await?,
+                    None,
+                ))
+            })
+            .try_join()
+            .await?,
+    );
 
     // Pass chunk items to chunking algorithm
     let mut chunks = make_chunks(
