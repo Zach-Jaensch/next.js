@@ -9,7 +9,7 @@ use turbo_tasks::{
 use super::{
     availability_info::AvailabilityInfo, available_modules::AvailableModulesInfo, chunk_content,
     chunking::make_chunks, AsyncModuleInfo, Chunk, ChunkContentResult, ChunkItem, ChunkItemTy,
-    ChunkableModule, ChunkingContext,
+    ChunkItemWithAsyncModuleInfo, ChunkableModule, ChunkingContext,
 };
 use crate::{
     environment::ChunkLoading, module::Module, output::OutputAssets, rebase::RebasedAsset,
@@ -143,17 +143,22 @@ pub async fn make_chunk_group(
     let async_loaders = async_modules
         .into_iter()
         .map(async |module| {
-            Ok(chunking_context
+            chunking_context
                 .async_loader_chunk_item(*module, Value::new(availability_info))
                 .to_resolved()
-                .await?)
+                .await
         })
         .try_join()
         .await?;
     let has_async_loaders = !async_loaders.is_empty();
-    let async_loader_chunk_items = async_loaders
-        .iter()
-        .map(|&chunk_item| (ChunkItemTy::Included, chunk_item, None));
+    let async_loader_chunk_items =
+        async_loaders
+            .iter()
+            .map(|&chunk_item| ChunkItemWithAsyncModuleInfo {
+                ty: ChunkItemTy::Included,
+                chunk_item,
+                async_info: None,
+            });
 
     // And also add output assets referenced by async chunk loaders
     let async_loader_references = async_loaders
@@ -187,11 +192,11 @@ pub async fn make_chunk_group(
     let mut chunk_items = all_modules
         .iter()
         .map(async |(m, async_info)| {
-            Ok((
-                ChunkItemTy::Included,
-                m.as_chunk_item(chunking_context).to_resolved().await?,
-                *async_info,
-            ))
+            Ok(ChunkItemWithAsyncModuleInfo {
+                ty: ChunkItemTy::Included,
+                chunk_item: m.as_chunk_item(chunking_context).to_resolved().await?,
+                async_info: *async_info,
+            })
         })
         .try_join()
         .await?;
@@ -200,11 +205,11 @@ pub async fn make_chunk_group(
         passthrough_modules
             .into_iter()
             .map(async |m| {
-                Ok((
-                    ChunkItemTy::Passthrough,
-                    m.as_chunk_item(chunking_context).to_resolved().await?,
-                    None,
-                ))
+                Ok(ChunkItemWithAsyncModuleInfo {
+                    ty: ChunkItemTy::Passthrough,
+                    chunk_item: m.as_chunk_item(chunking_context).to_resolved().await?,
+                    async_info: None,
+                })
             })
             .try_join()
             .await?,
